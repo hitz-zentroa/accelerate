@@ -28,6 +28,8 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Union, get_args
 
 import torch
+import torch.distributed
+import torch.distributed.fsdp
 
 from .constants import (
     FSDP_AUTO_WRAP_POLICY,
@@ -1460,6 +1462,13 @@ class FullyShardedDataParallelPlugin:
         min_num_params (`Optional[int]`, defaults to `None`):
             The minimum number of parameters a module must have to be wrapped. Only applicable when `auto_wrap_policy`
             is `size_based_wrap`.
+        device_mesh (`Optional[torch.distributed.DeviceMesh]`, default to `None`):
+            When device_mesh is passed, FSDP will use the underlying process groups for all-gather and reduce-scatter collective
+            communications. For hybrid sharding strategies such as ShardingStrategy.HYBRID_SHARD, users can pass in a 2D DeviceMesh.
+            For 2D FSDP + TP, users are required to pass in device_mesh. For more DeviceMesh info, please visit:
+            https://pytorch.org/tutorials/recipes/distributed_device_mesh.html
+        },
+
     """
 
     sharding_strategy: Union[str, "torch.distributed.fsdp.ShardingStrategy"] = field(
@@ -1587,6 +1596,16 @@ class FullyShardedDataParallelPlugin:
         },
     )
 
+    device_mesh: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "When device_mesh is passed, FSDP will use the underlying process groups for all-gather and reduce-scatter collective"
+            "communications. For hybrid sharding strategies such as ShardingStrategy.HYBRID_SHARD, users can pass in a 2D DeviceMesh. "
+            "For 2D FSDP + TP, users are required to pass in device_mesh instead of process_group. For more DeviceMesh info, please visit: "
+            "https://pytorch.org/tutorials/recipes/distributed_device_mesh.html"
+        },
+    )
+
     def __post_init__(self):
         from torch.distributed.fsdp import (
             BackwardPrefetch,
@@ -1606,6 +1625,14 @@ class FullyShardedDataParallelPlugin:
                 self.sharding_strategy = ShardingStrategy(int(self.sharding_strategy))
             else:
                 self.sharding_strategy = ShardingStrategy[self.sharding_strategy.upper()]
+
+        if isinstance(self.device_mesh, str):
+            # Convert string tuple representation like "(2,4)" to actual tuple
+            if self.device_mesh.startswith("(") and self.device_mesh.endswith(")"):
+                mesh_dims = tuple(int(x) for x in self.device_mesh.strip("()").split(","))
+            else:
+                mesh_dims = tuple(int(x) for x in self.device_mesh.split(","))
+            self.device_mesh = mesh_dims
 
         if self.cpu_offload is None:
             self.cpu_offload = str_to_bool(os.environ.get(env_prefix + "OFFLOAD_PARAMS", "False")) == 1
